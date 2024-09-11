@@ -3,7 +3,7 @@
 // Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
 // thusly:
 //
-//   import "gopkg.in/natefinch/lumberjack.v2"
+//	import "gopkg.in/natefinch/lumberjack.v2"
 //
 // The package name remains simply lumberjack, and the code resides at
 // https://github.com/natefinch/lumberjack under the v2.0 branch.
@@ -26,7 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,7 +66,7 @@ var _ io.WriteCloser = (*Logger)(nil)
 // `/var/log/foo/server.log`, a backup created at 6:30pm on Nov 11 2016 would
 // use the filename `/var/log/foo/server-2016-11-04T18-30-00.000.log`
 //
-// Cleaning Up Old Log Files
+// # Cleaning Up Old Log Files
 //
 // Whenever a new logfile gets created, old log files may be deleted.  The most
 // recent files according to the encoded timestamp will be retained, up to a
@@ -107,12 +107,61 @@ type Logger struct {
 	// using gzip. The default is not to perform compression.
 	Compress bool `json:"compress" yaml:"compress"`
 
+	// BackupTimeFormat is the time format of the time encoded in the backup
+	BackupTimeFormat string `json:"backup_time_format" yaml:"backup_time_format"`
+
+	// BackupPath is the path to store the backup files
+	BackupPath string `json:"backup_path" yaml:"backup_path"`
+
 	size int64
 	file *os.File
 	mu   sync.Mutex
 
 	millCh    chan bool
 	startMill sync.Once
+}
+
+type Option func(*Logger)
+
+func NewRotateWriter(filename string, opts ...Option) *Logger {
+	l := &Logger{
+		Filename:         filename,
+		MaxSize:          defaultMaxSize,
+		BackupTimeFormat: backupTimeFormat,
+	}
+	l.BackupPath = filepath.Dir(l.filename())
+
+	for _, opt := range opts {
+		opt(l)
+	}
+
+	return l
+}
+
+func WithBackupTimeFormat(format string) Option {
+	return func(l *Logger) {
+		l.BackupTimeFormat = format
+	}
+}
+func WithBackupPath(basepath string) Option {
+	return func(l *Logger) {
+		l.BackupPath = basepath
+	}
+}
+func WithMaxSize(size int) Option {
+	return func(l *Logger) {
+		l.MaxSize = size
+	}
+}
+func WithMaxBackups(size int) Option {
+	return func(l *Logger) {
+		l.MaxBackups = size
+	}
+}
+func WithMaxAge(age int) Option {
+	return func(l *Logger) {
+		l.MaxAge = age
+	}
 }
 
 var (
@@ -218,7 +267,7 @@ func (l *Logger) openNew() error {
 		// Copy the mode off the old logfile.
 		mode = info.Mode()
 		// move the existing file
-		newname := backupName(name, l.LocalTime)
+		newname := l.backupName(name, l.LocalTime)
 		if err := os.Rename(name, newname); err != nil {
 			return fmt.Errorf("can't rename log file: %s", err)
 		}
@@ -244,8 +293,7 @@ func (l *Logger) openNew() error {
 // backupName creates a new filename from the given name, inserting a timestamp
 // between the filename and the extension, using the local time if requested
 // (otherwise UTC).
-func backupName(name string, local bool) string {
-	dir := filepath.Dir(name)
+func (l *Logger) backupName(name string, local bool) string {
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
 	prefix := filename[:len(filename)-len(ext)]
@@ -254,8 +302,8 @@ func backupName(name string, local bool) string {
 		t = t.UTC()
 	}
 
-	timestamp := t.Format(backupTimeFormat)
-	return filepath.Join(dir, fmt.Sprintf("%s-%s%s", prefix, timestamp, ext))
+	timestamp := t.Format(l.BackupTimeFormat)
+	return filepath.Join(l.BackupPath, fmt.Sprintf("%s-%s%s", prefix, timestamp, ext))
 }
 
 // openExistingOrNew opens the logfile if it exists and if the current write
@@ -398,12 +446,20 @@ func (l *Logger) mill() {
 // oldLogFiles returns the list of backup log files stored in the same
 // directory as the current log file, sorted by ModTime
 func (l *Logger) oldLogFiles() ([]logInfo, error) {
-	files, err := ioutil.ReadDir(l.dir())
+	entries, err := os.ReadDir(l.dir())
 	if err != nil {
 		return nil, fmt.Errorf("can't read log file directory: %s", err)
 	}
-	logFiles := []logInfo{}
+	files := make([]fs.FileInfo, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, info)
+	}
 
+	logFiles := []logInfo{}
 	prefix, ext := l.prefixAndExt()
 
 	for _, f := range files {

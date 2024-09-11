@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 	"time"
@@ -51,7 +52,7 @@ func TestOpenExisting(t *testing.T) {
 
 	filename := logFile(dir)
 	data := []byte("foo!")
-	err := ioutil.WriteFile(filename, data, 0644)
+	err := os.WriteFile(filename, data, 0644)
 	isNil(err, t)
 	existsWithContent(filename, data, t)
 
@@ -176,7 +177,7 @@ func TestFirstWriteRotate(t *testing.T) {
 	defer l.Close()
 
 	start := []byte("boooooo!")
-	err := ioutil.WriteFile(filename, start, 0600)
+	err := os.WriteFile(filename, start, 0600)
 	isNil(err, t)
 
 	newFakeTime()
@@ -585,6 +586,12 @@ func TestRotate(t *testing.T) {
 
 	// this will use the new fake time
 	existsWithContent(filename, b2, t)
+}
+
+func TestCustomOption(t *testing.T) {
+	logpath := path.Join(t.TempDir(), "foo.log")
+	f := NewRotateWriter(logpath, WithMaxSize(1), WithMaxBackups(3), WithBackupTimeFormat("20060102T15-04-05.000"))
+	f.Close()
 }
 
 func TestCompressOnRotate(t *testing.T) {
